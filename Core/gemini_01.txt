@@ -1,0 +1,53 @@
+Aquí tienes el análisis y la explicación del funcionamiento de los tres archivos de código fuente, junto con la evolución de los relojes del sistema.
+
+### 1. Análisis de los Archivos Fuente
+
+#### `startup_stm32f103rbtx.s` (Código de Inicio en Ensamblador)
+Este archivo es el primer código que se ejecuta cuando el microcontrolador se enciende o se reinicia. Su función principal es preparar el entorno de ejecución para el código en C:
+* **Definición de la Tabla de Vectores:** Establece la tabla de vectores de interrupción (`g_pfnVectors`), indicando dónde está el puntero de pila inicial (`_estack`) y las direcciones de las rutinas de manejo de excepciones y reseteo.
+* **Rutina `Reset_Handler`:** * Llama a la función `SystemInit` (usualmente provista por el fabricante) para realizar configuraciones críticas del reloj de bajo nivel.
+    * Copia los valores iniciales de las variables globales/estáticas (sección `.data`) desde la memoria Flash a la memoria SRAM.
+    * Llena con ceros la sección `.bss` en la SRAM (variables globales/estáticas no inicializadas).
+    * Llama a los constructores estáticos a través de `__libc_init_array`.
+    * Finalmente, transfiere el control a la función `main` en C.
+* **Manejadores por Defecto:** Provee implementaciones débiles ("weak aliases") para todas las excepciones e interrupciones del hardware, las cuales apuntan a un bucle infinito (`Default_Handler`) por si ocurre una interrupción no esperada y el programador no implementó su propia función.
+
+#### `stm32f1xx_it.c` (Manejadores de Interrupciones)
+Este archivo contiene las rutinas de servicio de interrupción (ISR) del procesador Cortex-M3 y de los periféricos específicos de ST. 
+* **Excepciones del Sistema:** Contiene manejadores como `HardFault_Handler`, `MemManage_Handler`, `BusFault_Handler`, y `UsageFault_Handler`, los cuales entran en un bucle infinito continuo (`while (1)`) si ocurre un error grave en la ejecución.
+* **Base de Tiempo (SysTick):** Contiene la función `SysTick_Handler(void)`, la cual llama a `HAL_IncTick()`. Esto incrementa una variable interna cada vez que el temporizador SysTick desborda (por defecto, cada 1 ms), lo cual es indispensable para que funciones como `HAL_Delay()` funcionen correctamente.
+* **Interrupciones Externas:** Define `EXTI15_10_IRQHandler(void)`, que captura la interrupción generada por los pines 10 al 15 y delega su procesamiento a `HAL_GPIO_EXTI_IRQHandler(B1_Pin)`. Esto sugiere que hay un botón de usuario mapeado al pin `B1_Pin`.
+
+#### `main.c` (Programa Principal)
+Es el núcleo de la aplicación.
+* **Inicialización:** Comienza ejecutando `HAL_Init()`, lo cual resetea los periféricos e inicializa el SysTick para retardos de tiempo.
+* **Configuración del Reloj:** Llama a `SystemClock_Config()` para establecer la velocidad y fuentes de reloj del microcontrolador.
+* **Configuración de Periféricos:** Llama a `MX_GPIO_Init()` para configurar los pines de entrada/salida (como el botón y un LED) y a `MX_USART2_UART_Init()` para configurar el puerto serie USART2 a una velocidad de 115200 baudios.
+* **Bucle Principal:** En el bucle infinito (`while (1)`), el microcontrolador cambia el estado ("toggle") del pin `LD2_Pin` usando `HAL_GPIO_TogglePin()` y luego espera 500 milisegundos mediante `HAL_Delay(500)`. Esto hace que el LED `LD2` parpadee constantemente.
+
+---
+
+### 2. Evolución de las Frecuencias SysTick y SystemCoreClock
+
+La evolución de las frecuencias de reloj ocurre en las siguientes fases desde el inicio hasta llegar al bucle principal:
+
+**Fase 1: Salida del Reset (Inicio de `Reset_Handler`)**
+* **SystemCoreClock:** Al reiniciar un STM32F103, el hardware utiliza por defecto el oscilador interno de alta velocidad (HSI) que funciona a **8 MHz**. En este punto inicial, la frecuencia central del sistema es de 8 MHz.
+* **SysTick:** Aún no ha sido configurado, por lo que el contador SysTick está inactivo.
+
+**Fase 2: Ejecución de `HAL_Init()` en `main.c`**
+* **SystemCoreClock:** Sigue siendo de **8 MHz** en este momento. 
+* **SysTick:** La función `HAL_Init()` configura el temporizador SysTick para generar una interrupción cada 1 milisegundo (1 kHz), basándose en la frecuencia actual del reloj base (que es 8 MHz). 
+
+**Fase 3: Ejecución de `SystemClock_Config()` en `main.c`**
+* **SystemCoreClock:** La función activa el HSI, pero configura el sistema para usar un Multiplicador de Lazo de Seguimiento de Fase (PLL). Toma el HSI y lo divide entre 2 (`RCC_PLLSOURCE_HSI_DIV2`), lo que da 4 MHz. Luego, lo multiplica por 16 (`RCC_PLL_MUL16`), resultando en una frecuencia central (SYSCLK y HCLK) de **64 MHz**. La función `HAL_RCC_ClockConfig()` actualiza internamente la variable global `SystemCoreClock` a **64 MHz**.
+* **SysTick:** Como la frecuencia principal cambió abruptamente de 8 MHz a 64 MHz, la función `HAL_RCC_ClockConfig()` de la librería HAL reconfigura automáticamente el temporizador SysTick. Aunque el SysTick base se alimenta de 64 MHz ahora, se recalculan sus divisores internos para que continúe disparando una interrupción exactamente a **1 kHz** (cada 1 ms).
+
+**Fase 4: Bucle Principal (`while (1)`)**
+* El sistema opera a su frecuencia final y estable:
+    * **SystemCoreClock:** 64 MHz.
+    * **SysTick:** Temporizado sobre el reloj de 64 MHz pero operando/interrumpiendo a 1 kHz para permitir el retardo correcto de la función `HAL_Delay(500)`.
+
+---
+
+¿Te gustaría que profundice en cómo la función de configuración del USART2 o la gestión de interrupciones externas (del pin B1) afectan al procesador?
